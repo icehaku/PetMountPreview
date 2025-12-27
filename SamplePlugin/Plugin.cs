@@ -1,6 +1,7 @@
 using Dalamud.Game.Command;
 using Dalamud.IoC;
 using Dalamud.Plugin;
+using System;
 using System.IO;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
@@ -27,6 +28,7 @@ public sealed class Plugin : IDalamudPlugin
     public readonly WindowSystem WindowSystem = new("SamplePlugin");
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
+    private PreviewWindow PreviewWindow { get; init; }
     private ulong lastHoveredItem;
 
     public Plugin()
@@ -37,9 +39,11 @@ public sealed class Plugin : IDalamudPlugin
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this, goatImagePath);
+        PreviewWindow = new PreviewWindow();
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
+        WindowSystem.AddWindow(PreviewWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -81,7 +85,11 @@ public sealed class Plugin : IDalamudPlugin
 
         if (hovered == 0)
         {
-            lastHoveredItem = 0;
+            if (lastHoveredItem != 0)
+            {
+                PreviewWindow.HidePreview();
+                lastHoveredItem = 0;
+            }
             return;
         }
 
@@ -97,43 +105,128 @@ public sealed class Plugin : IDalamudPlugin
         if (!itemSheet.TryGetRow((uint)hovered, out var item))
             return;
 
-        var itemName = item.Name.ToString();
-        Log.Information($"Hovered Item: {itemName} ({hovered})");
+        // 🧊 ADICIONE ESTA LINHA
+        IceDebugger(hovered, item);
 
         var itemActionRef = item.ItemAction;
         if (!itemActionRef.IsValid)
+        {
+            PreviewWindow.HidePreview();
             return;
+        }
 
         var itemAction = itemActionRef.Value;
+        var actionRef = itemAction.Action;
 
-        // 🐾 MINION
-        if (itemAction.RowId == 853)
+        if (!actionRef.IsValid)
         {
-            var minionId = itemAction.Data[0];
-            var minion = DataManager
-                .GetExcelSheet<Lumina.Excel.Sheets.Companion>()?
-                .GetRow(minionId);
-
-            Log.Information(
-                $"MINION: {minion?.Singular ?? "Unknown"} (ID: {minionId})"
-            );
+            PreviewWindow.HidePreview();
             return;
         }
 
-        // 🐎 MOUNT
-        if (itemAction.RowId == 1322)
-        {
-            var mountId = itemAction.Data[0];
-            var mount = DataManager
-                .GetExcelSheet<Lumina.Excel.Sheets.Mount>()?
-                .GetRow(mountId);
+        var action = actionRef.Value;
 
-            Log.Information(
-                $"MOUNT: {mount?.Singular ?? "Unknown"} (ID: {mountId})"
-            );
+        // 🐾 MINION (Action ID 853)
+        if (action.RowId == 853)
+        {
+            var minionId = (uint)itemAction.Data[0];
+            var companionSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Companion>();
+
+            if (companionSheet != null && companionSheet.TryGetRow(minionId, out var companion))
+            {
+                var singularProp = companion.GetType().GetProperty("Singular");
+                var nameProp = singularProp?.GetValue(companion);
+                var name = nameProp?.ToString() ?? "Unknown Minion";
+
+                var iconProp = companion.GetType().GetProperty("Icon");
+                var iconValue = iconProp?.GetValue(companion);
+                var iconId = iconValue != null ? Convert.ToUInt32(iconValue) : 0u;
+
+                if (iconId > 0)
+                {
+                    // ADICIONA O OFFSET DE 64000 PARA MINIONS!
+                    var hrIconId = iconId + 64000;
+                    var folder = $"{(hrIconId / 1000) * 1000:D6}";
+                    var paddedIcon = $"{hrIconId:D6}";
+                    var hrPath = $"ui/icon/{folder}/{paddedIcon}_hr1.tex";
+
+                    Log.Information($"Minion HR Path: {hrPath}");
+
+                    var sharedTexture = TextureProvider.GetFromGame(hrPath);
+                    PreviewWindow.ShowPreview(sharedTexture, $"🐾 {name}");
+                    Log.Information($"Showing minion: {name}");
+                }
+            }
             return;
         }
+
+        // 🐎 MOUNT (Action ID 1322)
+        if (action.RowId == 1322)
+        {
+            var mountId = (uint)itemAction.Data[0];
+            var mountSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Mount>();
+
+            if (mountSheet != null && mountSheet.TryGetRow(mountId, out var mount))
+            {
+                var singularProp = mount.GetType().GetProperty("Singular");
+                var nameProp = singularProp?.GetValue(mount);
+                var name = nameProp?.ToString() ?? "Unknown Mount";
+
+                var iconProp = mount.GetType().GetProperty("Icon");
+                var iconValue = iconProp?.GetValue(mount);
+                var iconId = iconValue != null ? Convert.ToUInt32(iconValue) : 0u;
+
+                if (iconId > 0)
+                {
+                    var hrIconId = iconId + 64000;
+                    var folder = $"{(hrIconId / 1000) * 1000:D6}";
+                    var paddedIcon = $"{hrIconId:D6}";
+                    var hrPath = $"ui/icon/{folder}/{paddedIcon}_hr1.tex";
+
+                    Log.Information($"Mount HR Path: {hrPath}");
+
+                    var sharedTexture = TextureProvider.GetFromGame(hrPath);
+                    PreviewWindow.ShowPreview(sharedTexture, $"🐎 {name}");
+                    Log.Information($"Showing mount: {name}");
+                }
+            }
+            return;
+        }
+
+        PreviewWindow.HidePreview();
     }
+
+    private void IceDebugger(ulong itemId, Lumina.Excel.Sheets.Item item)
+    {
+        Log.Information($"=== ICE DEBUGGER - Item {itemId} ===");
+
+        var itemIconProp = item.GetType().GetProperty("Icon");
+        var itemIconId = Convert.ToUInt32(itemIconProp?.GetValue(item) ?? 0);
+
+        Log.Information($"Item Icon: {itemIconId}");
+
+        // Testa GetFromGameIcon com o Item Icon
+        var sharedTexture = TextureProvider.GetFromGameIcon(itemIconId);
+        var wrap = sharedTexture?.GetWrapOrDefault();
+
+        if (wrap != null)
+        {
+            Log.Information($"GetFromGameIcon Result: {wrap.Width}x{wrap.Height}");
+        }
+
+        // Testa também com GameIconLookup
+        var lookup = new Dalamud.Interface.Textures.GameIconLookup(itemIconId, hiRes: true);
+        var sharedTextureHR = TextureProvider.GetFromGameIcon(lookup);
+        var wrapHR = sharedTextureHR?.GetWrapOrDefault();
+
+        if (wrapHR != null)
+        {
+            Log.Information($"GetFromGameIcon (HiRes) Result: {wrapHR.Width}x{wrapHR.Height}");
+        }
+
+        Log.Information("=== END ICE DEBUGGER ===");
+    }
+
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
     public void ToggleMainUi() => MainWindow.Toggle();
