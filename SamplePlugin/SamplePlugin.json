@@ -1,8 +1,8 @@
 {
-  "Author": "your name here",
-  "Name": "Sample Plugin",
+  "Author": "Ice Haku",
+  "Name": "MinionMountPreview",
   "Punchline": "A short one-liner that shows up in /xlplugins.",
-  "Description": "A description that shows up in /xlplugins. List any major slash-command(s).",
+  "Description": "MinionMountPreview Description",
   "ApplicableVersion": "any",
   "Tags": [
     "sample",
