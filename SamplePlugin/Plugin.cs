@@ -1,11 +1,16 @@
+using Dalamud.Game.Addon.Lifecycle;
+using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Command;
+using Dalamud.Interface.Utility;
+using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
+using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.System.Memory;
+using FFXIVClientStructs.FFXIV.Component.GUI;
+using SamplePlugin.Windows;
 using System;
 using System.IO;
-using Dalamud.Interface.Windowing;
-using Dalamud.Plugin.Services;
-using SamplePlugin.Windows;
 
 namespace SamplePlugin;
 
@@ -20,16 +25,18 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
+    [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
 
     private const string CommandName = "/pmycommand";
+    private const uint CustomImageNodeId = 99999;
 
     public Configuration Configuration { get; init; }
 
     public readonly WindowSystem WindowSystem = new("SamplePlugin");
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
-    private PreviewWindow PreviewWindow { get; init; }
-    private ulong lastHoveredItem;
+
+    private string lastImagePath = string.Empty;
 
     public Plugin()
     {
@@ -39,11 +46,9 @@ public sealed class Plugin : IDalamudPlugin
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this, goatImagePath);
-        PreviewWindow = new PreviewWindow();
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
-        WindowSystem.AddWindow(PreviewWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -54,13 +59,14 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
 
-        Log.Information($"===A cool log message from {PluginInterface.Manifest.Name}===");
-        Framework.Update += OnFrameworkUpdate;
+        AddonLifecycle.RegisterListener(AddonEvent.PostRequestedUpdate, "ItemDetail", OnItemDetailUpdate);
+
+        Log.Information($"Plugin loaded!");
     }
 
     public void Dispose()
     {
-        Framework.Update -= OnFrameworkUpdate;
+        AddonLifecycle.UnregisterListener(OnItemDetailUpdate);
 
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
@@ -72,6 +78,8 @@ public sealed class Plugin : IDalamudPlugin
         MainWindow.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
+
+        CleanupImageNode();
     }
 
     private void OnCommand(string command, string args)
@@ -79,154 +87,282 @@ public sealed class Plugin : IDalamudPlugin
         MainWindow.Toggle();
     }
 
-    private void OnFrameworkUpdate(IFramework framework)
+    private unsafe void OnItemDetailUpdate(AddonEvent type, AddonArgs args)
     {
-        var hovered = GameGui.HoveredItem;
+        var atkUnitBase = (AtkUnitBase*)(nint)args.Addon;
+        if (atkUnitBase == null) return;
 
-        if (hovered == 0)
+        // Primeiro, esconde o node se existir
+        var imageNode = GetImageNode(atkUnitBase);
+        if (imageNode != null)
         {
-            if (lastHoveredItem != 0)
-            {
-                PreviewWindow.HidePreview();
-                lastHoveredItem = 0;
-            }
-            return;
+            imageNode->AtkResNode.NodeFlags &= ~NodeFlags.Visible;
         }
 
-        if (hovered == lastHoveredItem)
-            return;
-
-        lastHoveredItem = hovered;
+        var hoveredItem = GameGui.HoveredItem;
+        if (hoveredItem == 0) return;
 
         var itemSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
-        if (itemSheet == null)
-            return;
+        if (itemSheet == null) return;
 
-        if (!itemSheet.TryGetRow((uint)hovered, out var item))
+        if (!itemSheet.TryGetRow((uint)hoveredItem, out var item))
             return;
-
-        // 🧊 ADICIONE ESTA LINHA
-        IceDebugger(hovered, item);
 
         var itemActionRef = item.ItemAction;
         if (!itemActionRef.IsValid)
-        {
-            PreviewWindow.HidePreview();
             return;
-        }
 
         var itemAction = itemActionRef.Value;
         var actionRef = itemAction.Action;
 
         if (!actionRef.IsValid)
-        {
-            PreviewWindow.HidePreview();
             return;
-        }
 
         var action = actionRef.Value;
+
+        string imagePath = string.Empty;
+        float imageWidth = 100;
+        float imageHeight = 100;
+        float scale = 0.8f;
 
         // 🐾 MINION (Action ID 853)
         if (action.RowId == 853)
         {
             var minionId = (uint)itemAction.Data[0];
-            var companionSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Companion>();
-
-            if (companionSheet != null && companionSheet.TryGetRow(minionId, out var companion))
-            {
-                var singularProp = companion.GetType().GetProperty("Singular");
-                var nameProp = singularProp?.GetValue(companion);
-                var name = nameProp?.ToString() ?? "Unknown Minion";
-
-                var iconProp = companion.GetType().GetProperty("Icon");
-                var iconValue = iconProp?.GetValue(companion);
-                var iconId = iconValue != null ? Convert.ToUInt32(iconValue) : 0u;
-
-                if (iconId > 0)
-                {
-                    // ADICIONA O OFFSET DE 64000 PARA MINIONS!
-                    var hrIconId = iconId + 64000;
-                    var folder = $"{(hrIconId / 1000) * 1000:D6}";
-                    var paddedIcon = $"{hrIconId:D6}";
-                    var hrPath = $"ui/icon/{folder}/{paddedIcon}_hr1.tex";
-
-                    Log.Information($"Minion HR Path: {hrPath}");
-
-                    var sharedTexture = TextureProvider.GetFromGame(hrPath);
-                    PreviewWindow.ShowPreview(sharedTexture, $"🐾 {name}");
-                    Log.Information($"Showing minion: {name}");
-                }
-            }
-            return;
+            imagePath = GetMinionImagePath(minionId);
+            imageWidth = 100;
+            imageHeight = 100;
+            scale = 0.8f;
         }
-
         // 🐎 MOUNT (Action ID 1322)
-        if (action.RowId == 1322)
+        else if (action.RowId == 1322)
         {
             var mountId = (uint)itemAction.Data[0];
-            var mountSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Mount>();
-
-            if (mountSheet != null && mountSheet.TryGetRow(mountId, out var mount))
-            {
-                var singularProp = mount.GetType().GetProperty("Singular");
-                var nameProp = singularProp?.GetValue(mount);
-                var name = nameProp?.ToString() ?? "Unknown Mount";
-
-                var iconProp = mount.GetType().GetProperty("Icon");
-                var iconValue = iconProp?.GetValue(mount);
-                var iconId = iconValue != null ? Convert.ToUInt32(iconValue) : 0u;
-
-                if (iconId > 0)
-                {
-                    var hrIconId = iconId + 64000;
-                    var folder = $"{(hrIconId / 1000) * 1000:D6}";
-                    var paddedIcon = $"{hrIconId:D6}";
-                    var hrPath = $"ui/icon/{folder}/{paddedIcon}_hr1.tex";
-
-                    Log.Information($"Mount HR Path: {hrPath}");
-
-                    var sharedTexture = TextureProvider.GetFromGame(hrPath);
-                    PreviewWindow.ShowPreview(sharedTexture, $"🐎 {name}");
-                    Log.Information($"Showing mount: {name}");
-                }
-            }
-            return;
+            imagePath = GetMountImagePath(mountId);
+            imageWidth = 250;
+            imageHeight = 250;
+            scale = 0.8f;
         }
 
-        PreviewWindow.HidePreview();
+        if (string.IsNullOrEmpty(imagePath)) return;
+
+        Log.Information($"Image Path: {imagePath}");
+
+        var insertNode = atkUnitBase->GetNodeById(2);
+        if (insertNode == null) return;
+
+        var anchorNode = atkUnitBase->GetNodeById(47);
+        if (anchorNode == null) return;
+
+        // Cria o node se não existir
+        if (imageNode == null)
+        {
+            imageNode = CreateImageNode(atkUnitBase, insertNode);
+            if (imageNode == null) return;
+        }
+
+        // Torna visível
+        imageNode->AtkResNode.NodeFlags |= NodeFlags.Visible;
+
+        // Carrega a textura se mudou
+        if (imagePath != lastImagePath)
+        {
+            Log.Information($"Loading texture: {imagePath}");
+            imageNode->LoadTexture(imagePath);
+            lastImagePath = imagePath;
+        }
+
+        // Ajusta tamanho e posição
+        var width = (ushort)((atkUnitBase->RootNode->Width - 20f) * scale);
+        var height = (ushort)(width * imageWidth / imageHeight);
+
+        imageNode->AtkResNode.SetWidth(width);
+        imageNode->AtkResNode.SetHeight(height);
+
+        var x = atkUnitBase->RootNode->Width / 2f - width / 2f;
+        var y = anchorNode->Y + anchorNode->GetHeight() + 8;
+        imageNode->AtkResNode.SetPositionFloat(x, y);
+
+        // Ajusta altura do tooltip
+        var newHeight = (ushort)(imageNode->AtkResNode.Y + height + 16);
+        atkUnitBase->WindowNode->AtkResNode.SetHeight(newHeight);
+        atkUnitBase->WindowNode->Component->UldManager.SearchNodeById(2)->SetHeight(newHeight);
+        insertNode->SetPositionFloat(insertNode->X, newHeight - 20);
+        atkUnitBase->RootNode->SetHeight(newHeight);
+
+        // 🔧 ADICIONE ESTE CÓDIGO PARA EVITAR QUE SAIA DA TELA
+        var screenHeight = ImGuiHelpers.MainViewport.Size.Y;
+        var tooltipY = atkUnitBase->Y;
+        var tooltipBottom = tooltipY + newHeight;
+
+        // Se o tooltip sair da parte de baixo da tela, move para cima
+        if (tooltipBottom > screenHeight)
+        {
+            var overflow = tooltipBottom - screenHeight;
+            atkUnitBase->SetPosition((short)atkUnitBase->X, (short)(tooltipY - overflow - 10));
+        }
+
     }
 
-    private void IceDebugger(ulong itemId, Lumina.Excel.Sheets.Item item)
+    private unsafe AtkImageNode* GetImageNode(AtkUnitBase* atkUnitBase)
     {
-        Log.Information($"=== ICE DEBUGGER - Item {itemId} ===");
+        if (atkUnitBase == null) return null;
 
-        var itemIconProp = item.GetType().GetProperty("Icon");
-        var itemIconId = Convert.ToUInt32(itemIconProp?.GetValue(item) ?? 0);
-
-        Log.Information($"Item Icon: {itemIconId}");
-
-        // Testa GetFromGameIcon com o Item Icon
-        var sharedTexture = TextureProvider.GetFromGameIcon(itemIconId);
-        var wrap = sharedTexture?.GetWrapOrDefault();
-
-        if (wrap != null)
+        for (var i = 0; i < atkUnitBase->UldManager.NodeListCount; i++)
         {
-            Log.Information($"GetFromGameIcon Result: {wrap.Width}x{wrap.Height}");
+            var node = atkUnitBase->UldManager.NodeList[i];
+            if (node->NodeId == CustomImageNodeId && node->Type == NodeType.Image)
+            {
+                return (AtkImageNode*)node;
+            }
         }
 
-        // Testa também com GameIconLookup
-        var lookup = new Dalamud.Interface.Textures.GameIconLookup(itemIconId, hiRes: true);
-        var sharedTextureHR = TextureProvider.GetFromGameIcon(lookup);
-        var wrapHR = sharedTextureHR?.GetWrapOrDefault();
-
-        if (wrapHR != null)
-        {
-            Log.Information($"GetFromGameIcon (HiRes) Result: {wrapHR.Width}x{wrapHR.Height}");
-        }
-
-        Log.Information("=== END ICE DEBUGGER ===");
+        return null;
     }
 
+    private unsafe AtkImageNode* CreateImageNode(AtkUnitBase* atkUnitBase, AtkResNode* insertNode)
+    {
+        Log.Information("Creating image node");
+
+        var imageNode = IMemorySpace.GetUISpace()->Create<AtkImageNode>();
+        imageNode->AtkResNode.Type = NodeType.Image;
+        imageNode->AtkResNode.NodeId = CustomImageNodeId;
+        imageNode->AtkResNode.NodeFlags = NodeFlags.AnchorTop | NodeFlags.AnchorLeft | NodeFlags.Visible;
+        //imageNode->AtkResNode.NodeFlags = NodeFlags.AnchorTop | NodeFlags.AnchorLeft;
+        imageNode->AtkResNode.DrawFlags = 0;
+        imageNode->WrapMode = 1;
+        imageNode->Flags = ImageNodeFlags.AutoFit;
+
+        // Cria PartsList
+        var partsList = (AtkUldPartsList*)IMemorySpace.GetUISpace()->Malloc((ulong)sizeof(AtkUldPartsList), 8);
+        if (partsList == null)
+        {
+            Log.Error("Failed to alloc partsList");
+            imageNode->AtkResNode.Destroy(true);
+            return null;
+        }
+
+        partsList->Id = 0;
+        partsList->PartCount = 1;
+
+        // Cria Part
+        var part = (AtkUldPart*)IMemorySpace.GetUISpace()->Malloc((ulong)sizeof(AtkUldPart), 8);
+        if (part == null)
+        {
+            Log.Error("Failed to alloc part");
+            IMemorySpace.Free(partsList, (ulong)sizeof(AtkUldPartsList));
+            imageNode->AtkResNode.Destroy(true);
+            return null;
+        }
+
+        part->U = 0;
+        part->V = 0;
+        part->Width = 256;
+        part->Height = 256;
+
+        partsList->Parts = part;
+
+        // Cria Asset
+        var asset = (AtkUldAsset*)IMemorySpace.GetUISpace()->Malloc((ulong)sizeof(AtkUldAsset), 8);
+        if (asset == null)
+        {
+            Log.Error("Failed to alloc asset");
+            IMemorySpace.Free(part, (ulong)sizeof(AtkUldPart));
+            IMemorySpace.Free(partsList, (ulong)sizeof(AtkUldPartsList));
+            imageNode->AtkResNode.Destroy(true);
+            return null;
+        }
+
+        asset->Id = 0;
+        asset->AtkTexture.Ctor();
+        part->UldAsset = asset;
+        imageNode->PartsList = partsList;
+
+        // Adiciona à lista de nodes
+        var prev = insertNode->PrevSiblingNode;
+        imageNode->AtkResNode.ParentNode = insertNode->ParentNode;
+
+        insertNode->PrevSiblingNode = (AtkResNode*)imageNode;
+
+        if (prev != null) prev->NextSiblingNode = (AtkResNode*)imageNode;
+
+        imageNode->AtkResNode.PrevSiblingNode = prev;
+        imageNode->AtkResNode.NextSiblingNode = insertNode;
+
+        atkUnitBase->UldManager.UpdateDrawNodeList();
+
+        Log.Information("Image node created successfully");
+        return imageNode;
+    }
+
+    private unsafe void CleanupImageNode()
+    {
+        var addonPtr = GameGui.GetAddonByName("ItemDetail");
+        if (addonPtr == IntPtr.Zero) return;
+
+        var unitBase = (AtkUnitBase*)(nint)addonPtr;
+        var imageNode = GetImageNode(unitBase);
+        if (imageNode == null) return;
+
+        if (imageNode->AtkResNode.PrevSiblingNode != null)
+            imageNode->AtkResNode.PrevSiblingNode->NextSiblingNode = imageNode->AtkResNode.NextSiblingNode;
+        if (imageNode->AtkResNode.NextSiblingNode != null)
+            imageNode->AtkResNode.NextSiblingNode->PrevSiblingNode = imageNode->AtkResNode.PrevSiblingNode;
+
+        unitBase->UldManager.UpdateDrawNodeList();
+
+        if (imageNode->PartsList != null)
+        {
+            if (imageNode->PartsList->Parts != null)
+            {
+                if (imageNode->PartsList->Parts->UldAsset != null)
+                    IMemorySpace.Free(imageNode->PartsList->Parts->UldAsset, (ulong)sizeof(AtkUldAsset));
+                IMemorySpace.Free(imageNode->PartsList->Parts, (ulong)sizeof(AtkUldPart));
+            }
+            IMemorySpace.Free(imageNode->PartsList, (ulong)sizeof(AtkUldPartsList));
+        }
+
+        imageNode->AtkResNode.Destroy(true);
+        lastImagePath = string.Empty;
+    }
+
+    private string GetMountImagePath(uint mountId)
+    {
+        var mountSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Mount>();
+        if (mountSheet == null) return string.Empty;
+
+        if (!mountSheet.TryGetRow(mountId, out var mount))
+            return string.Empty;
+
+        var iconProp = mount.GetType().GetProperty("Icon");
+        var iconValue = iconProp?.GetValue(mount);
+        var iconId = iconValue != null ? Convert.ToUInt32(iconValue) + 64000 : 0u;
+
+        if (iconId == 0) return string.Empty;
+
+        var folder = (iconId / 1000 * 1000).ToString("D6");
+        var icon = iconId.ToString("D6");
+        return $"ui/icon/{folder}/{icon}_hr1.tex";
+    }
+
+    private string GetMinionImagePath(uint minionId)
+    {
+        var companionSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Companion>();
+        if (companionSheet == null) return string.Empty;
+
+        if (!companionSheet.TryGetRow(minionId, out var companion))
+            return string.Empty;
+
+        var iconProp = companion.GetType().GetProperty("Icon");
+        var iconValue = iconProp?.GetValue(companion);
+        var iconId = iconValue != null ? Convert.ToUInt32(iconValue) + 64000 : 0u;
+
+        if (iconId == 0) return string.Empty;
+
+        var folder = (iconId / 1000 * 1000).ToString("D6");
+        var icon = iconId.ToString("D6");
+        return $"ui/icon/{folder}/{icon}_hr1.tex";
+    }
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
     public void ToggleMainUi() => MainWindow.Toggle();
