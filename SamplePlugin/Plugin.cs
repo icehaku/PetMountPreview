@@ -6,6 +6,7 @@ using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.System.Memory;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using SamplePlugin.Windows;
@@ -61,7 +62,28 @@ public sealed class Plugin : IDalamudPlugin
 
         AddonLifecycle.RegisterListener(AddonEvent.PostRequestedUpdate, "ItemDetail", OnItemDetailUpdate);
 
+        GameGui.HoveredItemChanged += OnHoveredItemChanged;
+
         Log.Information($"Plugin loaded!");
+    }
+
+    private unsafe void OnHoveredItemChanged(object? sender, ulong itemId)
+    {
+        if (itemId == 0)
+        {
+            //Log.Information("Mouse saiu de cima do item");
+            BGMSystem.Instance()->ResetBGM(0);
+            return;
+        }
+
+        //Log.Information($"Mouse está sobre o item: {itemId}");
+
+        // Aqui você pode processar o item
+        var itemSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
+        if (itemSheet != null && itemSheet.TryGetRow((uint)itemId, out var item))
+        {
+            Log.Information($"Item name: {item.Name}");
+        }
     }
 
     public void Dispose()
@@ -79,6 +101,8 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.RemoveHandler(CommandName);
 
+        GameGui.HoveredItemChanged -= OnHoveredItemChanged;
+
         CleanupImageNode();
     }
 
@@ -86,6 +110,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         MainWindow.Toggle();
     }
+
 
     private unsafe void OnItemDetailUpdate(AddonEvent type, AddonArgs args)
     {
@@ -99,8 +124,11 @@ public sealed class Plugin : IDalamudPlugin
             imageNode->AtkResNode.NodeFlags &= ~NodeFlags.Visible;
         }
 
+
         var hoveredItem = GameGui.HoveredItem;
-        if (hoveredItem == 0) return;
+        //Log.Information($"hoveredItem: {hoveredItem}");
+        if (hoveredItem == 0)
+            return;
 
         var itemSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
         if (itemSheet == null) return;
@@ -137,7 +165,26 @@ public sealed class Plugin : IDalamudPlugin
         // 🐎 MOUNT (Action ID 1322)
         else if (action.RowId == 1322)
         {
+            /// 0 = Event<br/>
+            /// 1 = Battle<br/>
+            /// 2 = MiniGame (RhythmAction, TurnBreak)<br/>
+            /// 3 = Content<br/>
+            /// 4 = GFate<br/>
+            /// 5 = Duel<br/>
+            /// 6 = Mount<br/>
+            /// 7 = Unknown, no xrefs<br/>
+            /// 8 = Unknown, via packet (near PlayerState stuff)<br/>
+            /// 9 = Wedding<br/>
+            /// 10 = Town<br/>
+            /// 11 = Territory
+
             var mountId = (uint)itemAction.Data[0];
+            var bgmId = GetMountBGMId(mountId);
+            if (bgmId.HasValue)
+            {
+                BGMSystem.SetBGM(bgmId.Value, 0);
+            }
+
             imagePath = GetMountImagePath(mountId);
             imageWidth = 250;
             imageHeight = 250;
@@ -146,7 +193,6 @@ public sealed class Plugin : IDalamudPlugin
 
         if (string.IsNullOrEmpty(imagePath)) return;
 
-        Log.Information($"Image Path: {imagePath}");
 
         var insertNode = atkUnitBase->GetNodeById(2);
         if (insertNode == null) return;
@@ -362,6 +408,34 @@ public sealed class Plugin : IDalamudPlugin
         var folder = (iconId / 1000 * 1000).ToString("D6");
         var icon = iconId.ToString("D6");
         return $"ui/icon/{folder}/{icon}_hr1.tex";
+    }
+
+    private ushort? GetMountBGMId(uint mountId)
+    {
+        var mountSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Mount>();
+        if (mountSheet == null) return null;
+
+        if (!mountSheet.TryGetRow(mountId, out var mount))
+            return null;
+
+        var rideBgmProp = mount.GetType().GetProperty("RideBGM");
+        if (rideBgmProp == null) return null;
+
+        var rideBgmRef = rideBgmProp.GetValue(mount);
+        var isValidProp = rideBgmRef?.GetType().GetProperty("IsValid");
+        var isValid = (bool)(isValidProp?.GetValue(rideBgmRef) ?? false);
+
+        if (!isValid) return null;
+
+        var valueProp = rideBgmRef?.GetType().GetProperty("Value");
+        var bgm = valueProp?.GetValue(rideBgmRef);
+
+        if (bgm == null) return null;
+
+        var rowIdProp = bgm.GetType().GetProperty("RowId");
+        var rowId = (uint)(rowIdProp?.GetValue(bgm) ?? 0);
+
+        return rowId > 0 ? (ushort)rowId : null;
     }
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
