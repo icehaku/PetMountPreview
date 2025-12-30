@@ -1,101 +1,105 @@
-using System;
-using System.Numerics;
 using Dalamud.Bindings.ImGui;
-using Dalamud.Interface.Windowing;
 using Dalamud.Interface.Textures;
-using Dalamud.Interface.Textures.TextureWraps;
+using Dalamud.Interface.Utility;
+using Dalamud.Interface.Windowing;
+using System.Numerics;
 
 namespace SamplePlugin.Windows;
 
 public class PreviewWindow : Window
 {
-    private ISharedImmediateTexture? currentSharedTexture;
-    private string currentName = string.Empty;
+    private ISharedImmediateTexture? currentTexture;
 
     public PreviewWindow() : base(
-        "Companion Preview",
+        "Preview##PreviewWindow",
         ImGuiWindowFlags.NoDecoration |
         ImGuiWindowFlags.NoInputs |
         ImGuiWindowFlags.NoBackground |
         ImGuiWindowFlags.NoSavedSettings)
     {
-        Size = new Vector2(300, 300);
+        Size = new Vector2(200, 200);
         SizeCondition = ImGuiCond.Always;
-
-        var viewport = ImGui.GetMainViewport();
-        Position = new Vector2(
-            viewport.Size.X - 320,
-            viewport.Size.Y - 320
-        );
-        PositionCondition = ImGuiCond.Always;
+        IsOpen = false;
     }
 
-    public void ShowPreview(ISharedImmediateTexture sharedTexture, string name)
+    public void ShowPreview(ISharedImmediateTexture texture, Vector2 position, Vector2 size)
     {
-        currentSharedTexture = sharedTexture;
-        currentName = name;
+        currentTexture = texture;
+        Size = size;
+        Position = position;
         IsOpen = true;
     }
 
     public void HidePreview()
     {
         IsOpen = false;
+        currentTexture = null;        
     }
 
     public override void Draw()
     {
-        if (currentSharedTexture == null)
+        if (currentTexture == null) return;
+
+        var wrap = currentTexture.GetWrapOrDefault();
+        if (wrap == null)
+        {
+            // Textura ainda não pronta, mostra loading
+            var pos = ImGui.GetWindowPos();
+            var size = ImGui.GetWindowSize();
+
+            var drawList = ImGui.GetWindowDrawList();
+            drawList.AddRectFilled(pos, pos + size, ImGui.ColorConvertFloat4ToU32(new Vector4(0, 0, 0, 0.85f)), 10f);
+
+            var loadingText = "Loading...";
+            var textSize = ImGui.CalcTextSize(loadingText);
+            ImGui.SetCursorScreenPos(pos + (size - textSize) / 2);
+            ImGui.Text(loadingText);
             return;
+        }
 
-        // Pega o wrap a cada frame para garantir que a textura está pronta
-        var currentTexture = currentSharedTexture.GetWrapOrDefault();
-        if (currentTexture == null)
-            return;
+        // ✅ Ajusta tamanho E posição da janela quando textura carregar
+        var padding = 20f;
+        var imageSize = new Vector2(wrap.Width, wrap.Height);
+        var windowSize = imageSize + new Vector2(padding, padding);
 
-        var drawList = ImGui.GetWindowDrawList();
-        var pos = ImGui.GetWindowPos();
-        var size = ImGui.GetWindowSize();
+        if (Size != windowSize)
+        {
+            Size = windowSize;
+            SizeCondition = ImGuiCond.Always;
 
-        drawList.AddRectFilled(
-            pos,
-            pos + size,
-            ImGui.ColorConvertFloat4ToU32(new Vector4(0, 0, 0, 0.8f)),
-            10f
-        );
+            // ✅ Recalcula posição quando tamanho mudar
+            var screenWidth = ImGuiHelpers.MainViewport.Size.X;
+            Position = new Vector2(screenWidth - windowSize.X - 20, 20);
+            PositionCondition = ImGuiCond.Always;
+        }
 
-        drawList.AddRect(
-            pos,
-            pos + size,
-            ImGui.ColorConvertFloat4ToU32(new Vector4(1, 1, 1, 0.3f)),
-            10f,
-            0,
-            2f
-        );
+        var drawList2 = ImGui.GetWindowDrawList();
+        var pos2 = ImGui.GetWindowPos();
+        var size2 = ImGui.GetWindowSize();
 
-        var imageSize = new Vector2(256, 256);
-        var imagePos = pos + new Vector2(
-            (size.X - imageSize.X) / 2,
-            20
-        );
+        // Fundo preto semi-transparente
+        drawList2.AddRectFilled(pos2, pos2 + size2, ImGui.ColorConvertFloat4ToU32(new Vector4(0, 0, 0, 0.85f)), 10f);
+
+        // Borda branca sutil
+        drawList2.AddRect(pos2, pos2 + size2, ImGui.ColorConvertFloat4ToU32(new Vector4(1, 1, 1, 0.3f)), 10f, 0, 2f);
+
+        // Desenha a imagem com padding
+        var imagePadding = 10f;
+        var imagePos = pos2 + new Vector2(imagePadding, imagePadding);
+        var finalImageSize = size2 - new Vector2(imagePadding * 2, imagePadding * 2);
 
         ImGui.SetCursorScreenPos(imagePos);
-        ImGui.Image(currentTexture.Handle, imageSize);
-
-        var textSize = ImGui.CalcTextSize(currentName);
-        var textPos = pos + new Vector2(
-            (size.X - textSize.X) / 2,
-            imagePos.Y + imageSize.Y + 10
-        );
-
-        ImGui.SetCursorScreenPos(textPos);
-        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1, 1, 1, 1));
-        ImGui.Text(currentName);
-        ImGui.PopStyleColor();
+        ImGui.Image(wrap.Handle, finalImageSize);
     }
 
-    public override void OnClose()
-    {
-        currentSharedTexture = null;
-        currentName = string.Empty;
-    }
+    //public override void SimpleDraw()
+    //{
+    //    if (currentTexture == null) return;
+
+    //    var wrap = currentTexture.GetWrapOrDefault();
+    //    if (wrap != null)
+    //    {
+    //        ImGui.Image(wrap.Handle, imageSize);
+    //    }
+    //}
 }

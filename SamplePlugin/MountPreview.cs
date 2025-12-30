@@ -27,6 +27,11 @@ public unsafe class MountPreview : IPreviewHandler
         return action.RowId == MountActionId;
     }
 
+    public bool CanHandleByCategory(Lumina.Excel.Sheets.Item item)
+    {
+        return false; // Minion e Mount usam ItemAction, não categoria
+    }
+
     public string GetImagePath(uint mountId)
     {
         var mountSheet = dataManager.GetExcelSheet<Lumina.Excel.Sheets.Mount>();

@@ -1,13 +1,16 @@
-using FFXIVClientStructs.FFXIV.Component.GUI;
-
 namespace SamplePlugin.Previews;
 
 public interface IPreviewHandler
 {
     /// <summary>
-    /// Verifica se este handler pode processar o item
+    /// Verifica se este handler pode processar o item por ItemAction
     /// </summary>
     bool CanHandle(Lumina.Excel.Sheets.ItemAction itemAction);
+
+    /// <summary>
+    /// Verifica se este handler pode processar o item por categoria
+    /// </summary>
+    bool CanHandleByCategory(Lumina.Excel.Sheets.Item item);
 
     /// <summary>
     /// Obtém o caminho da imagem para o item

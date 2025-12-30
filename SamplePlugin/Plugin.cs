@@ -1,6 +1,7 @@
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Command;
+using Dalamud.Interface.Textures;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
@@ -14,6 +15,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Numerics;
+
 
 namespace SamplePlugin;
 
@@ -38,9 +41,12 @@ public sealed class Plugin : IDalamudPlugin
     public readonly WindowSystem WindowSystem = new("SamplePlugin");
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
+    private PreviewWindow PreviewWindow { get; init; }
 
     private string lastImagePath = string.Empty;
     private IPreviewHandler? currentHandler = null;
+    private readonly Dictionary<string, ISharedImmediateTexture> externalTextureCache = new();
+
 
     // Lista de handlers registrados
     private readonly List<IPreviewHandler> previewHandlers = new();
@@ -53,9 +59,11 @@ public sealed class Plugin : IDalamudPlugin
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this, goatImagePath);
+        PreviewWindow = new PreviewWindow(); // 🔥 ESTA LINHA DEVE EXISTIR
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
+        WindowSystem.AddWindow(PreviewWindow); // 🔥 E ESTA TAMBÉM
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -77,9 +85,12 @@ public sealed class Plugin : IDalamudPlugin
 
     private void RegisterPreviewHandlers()
     {
+        var pluginDir = PluginInterface.AssemblyLocation.Directory?.FullName ?? string.Empty;
+
         previewHandlers.Add(new MinionPreview(DataManager, Log));
         previewHandlers.Add(new MountPreview(DataManager, Log));
-        
+        previewHandlers.Add(new WallMountedPreview(DataManager, Log, pluginDir));
+
         Log.Information($"Registered {previewHandlers.Count} preview handlers");
     }
 
@@ -90,6 +101,11 @@ public sealed class Plugin : IDalamudPlugin
             // Notifica o handler atual para limpar
             currentHandler?.OnPreviewHide();
             currentHandler = null;
+
+            PreviewWindow?.HidePreview();
+            currentHandler?.OnPreviewHide();
+            currentHandler = null;
+            externalTextureCache.Clear();
         }
     }
 
@@ -97,6 +113,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         // Limpa preview atual
         currentHandler?.OnPreviewHide();
+        PreviewWindow?.HidePreview();
+        externalTextureCache.Clear();
 
         AddonLifecycle.UnregisterListener(OnItemDetailUpdate);
         GameGui.HoveredItemChanged -= OnHoveredItemChanged;
@@ -141,15 +159,28 @@ public sealed class Plugin : IDalamudPlugin
         if (!itemSheet.TryGetRow((uint)hoveredItem, out var item))
             return;
 
-        var itemActionRef = item.ItemAction;
-        if (!itemActionRef.IsValid)
-            return;
+        IPreviewHandler? handler = null;
+        uint itemId = 0;
 
-        var itemAction = itemActionRef.Value;
+        // 🎯 Primeiro tenta por categoria (Wall-Mounted, etc)
+        handler = previewHandlers.FirstOrDefault(h => h.CanHandleByCategory(item));
+        if (handler != null)
+        {
+            itemId = item.RowId; // Wall-mounted usa o item ID direto
+        }
+        else
+        {
+            // Tenta por ItemAction (Minion/Mount)
+            var itemActionRef = item.ItemAction;
+            if (!itemActionRef.IsValid) return;
 
-        // 🎯 Encontra o handler apropriado para este item
-        var handler = previewHandlers.FirstOrDefault(h => h.CanHandle(itemAction));
-        if (handler == null) return;
+            var itemAction = itemActionRef.Value;
+            handler = previewHandlers.FirstOrDefault(h => h.CanHandle(itemAction));
+
+            if (handler == null) return;
+
+            itemId = (uint)itemAction.Data[0];
+        }
 
         // Atualiza handler atual
         if (currentHandler != handler)
@@ -158,16 +189,30 @@ public sealed class Plugin : IDalamudPlugin
             currentHandler = handler;
         }
 
-        var itemId = (uint)itemAction.Data[0];
         var imagePath = handler.GetImagePath(itemId);
-        
-        if (string.IsNullOrEmpty(imagePath)) return;
+
+        if (string.IsNullOrEmpty(imagePath))
+        {
+            PreviewWindow?.HidePreview();
+            return;
+        }
 
         // Obtém dimensões do handler
         var (imageWidth, imageHeight, scale) = handler.GetImageDimensions();
 
         // Executa ações do handler (ex: tocar música)
         handler.OnPreviewShow(itemId);
+
+        // 🖼️ Se é imagem externa (.png/.jpg) - mostra em janela customizada
+        if (imagePath.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+            imagePath.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
+        {
+            LoadExternalTextureInWindow(imagePath, atkUnitBase);
+            return;
+        }
+
+        // 🎮 Se é textura do jogo (.tex) - usa o método normal no tooltip
+        PreviewWindow?.HidePreview();
 
         var insertNode = atkUnitBase->GetNodeById(2);
         if (insertNode == null) return;
@@ -342,6 +387,50 @@ public sealed class Plugin : IDalamudPlugin
 
         imageNode->AtkResNode.Destroy(true);
         lastImagePath = string.Empty;
+    }
+
+    private unsafe void LoadExternalTextureInWindow(string filePath, AtkUnitBase* atkUnitBase)
+    {
+        try
+        {
+            if (!externalTextureCache.TryGetValue(filePath, out var sharedTexture))
+            {
+                sharedTexture = TextureProvider.GetFromFile(filePath);
+                externalTextureCache[filePath] = sharedTexture;
+            }
+
+            if (sharedTexture != null)
+            {
+                var wrap = sharedTexture.GetWrapOrDefault();
+                if (wrap != null)
+                {
+                    // ✅ Calcula tamanho baseado na imagem REAL
+                    var padding = 20f;
+                    var imageSize = new Vector2(wrap.Width, wrap.Height);
+                    var windowSize = imageSize + new Vector2(padding, padding);
+
+                    var screenWidth = ImGuiHelpers.MainViewport.Size.X;
+                    var tooltipPos = new Vector2(screenWidth - windowSize.X - 20, 20);
+
+                    PreviewWindow?.ShowPreview(sharedTexture, tooltipPos, windowSize);
+                    Log.Information($"Showing texture: {filePath} ({wrap.Width}x{wrap.Height})");
+                }
+                else
+                {
+                    // Se wrap ainda null, usa tamanho padrão e depois ajusta no Draw
+                    var screenWidth = ImGuiHelpers.MainViewport.Size.X;
+                    var windowSize = new Vector2(320, 320);
+                    var tooltipPos = new Vector2(screenWidth - windowSize.X - 20, 20);
+
+                    PreviewWindow?.ShowPreview(sharedTexture, tooltipPos, windowSize);
+                    Log.Information($"Texture not ready yet, showing loading: {filePath}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Error loading external texture: {ex.Message}");
+        }
     }
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
