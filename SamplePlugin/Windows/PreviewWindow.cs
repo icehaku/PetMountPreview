@@ -1,5 +1,6 @@
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Textures;
+using Dalamud.Interface.Textures.TextureWraps;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
 using System;
@@ -10,7 +11,8 @@ namespace SamplePlugin.Windows;
 public class PreviewWindow : Window
 {
     private ISharedImmediateTexture? currentTexture;
-    private string? errorMessage; // 🔥 NOVO: Campo para mensagem de erro
+    private string? errorMessage;
+    private const float MaxImageSize = 400f; // 🔥 Constante compartilhada
 
     public PreviewWindow() : base(
         "Preview##PreviewWindow",
@@ -24,22 +26,57 @@ public class PreviewWindow : Window
         IsOpen = false;
     }
 
+    // 🔥 NOVO: Calcula tamanho ideal ANTES de abrir a janela
+    private Vector2 CalculateWindowSize(IDalamudTextureWrap wrap)
+    {
+        var padding = 20f;
+        var imageSize = new Vector2(wrap.Width, wrap.Height);
+
+        // Limita tamanho máximo
+        if (imageSize.X > MaxImageSize || imageSize.Y > MaxImageSize)
+        {
+            var scale = Math.Min(MaxImageSize / imageSize.X, MaxImageSize / imageSize.Y);
+            imageSize = new Vector2(imageSize.X * scale, imageSize.Y * scale);
+        }
+
+        return imageSize + new Vector2(padding, padding);
+    }
+
+    // 🔥 MODIFICADO: Tenta obter wrap e calcular tamanho antes de abrir
     public void ShowPreview(ISharedImmediateTexture texture, Vector2 position, Vector2 size)
     {
         currentTexture = texture;
-        errorMessage = null; // 🔥 Limpa erro ao mostrar textura
-        Size = size;
-        Position = position;
+        errorMessage = null;
+
+        // 🔥 NOVO: Tenta obter wrap imediatamente
+        var wrap = texture.GetWrapOrDefault();
+        if (wrap != null)
+        {
+            // Se conseguiu o wrap, calcula tamanho correto
+            var calculatedSize = CalculateWindowSize(wrap);
+            Size = calculatedSize;
+
+            // Recalcula posição com tamanho correto
+            var screenWidth = ImGuiHelpers.MainViewport.Size.X;
+            Position = new Vector2(screenWidth - calculatedSize.X - 20, 20);
+        }
+        else
+        {
+            // Se não tem wrap ainda, usa tamanho fornecido
+            Size = size;
+            Position = position;
+        }
+
+        SizeCondition = ImGuiCond.Always;
+        PositionCondition = ImGuiCond.Always;
         IsOpen = true;
     }
 
-    // 🔥 NOVO: Método para exibir mensagem de erro
     public void ShowError(string message, Vector2 position)
     {
         currentTexture = null;
         errorMessage = message;
 
-        // Calcula tamanho baseado no texto
         var textSize = ImGui.CalcTextSize(message);
         var padding = 40f;
         Size = textSize + new Vector2(padding * 2, padding * 2);
@@ -54,41 +91,36 @@ public class PreviewWindow : Window
     {
         IsOpen = false;
         currentTexture = null;
-        errorMessage = null; // 🔥 Limpa erro ao esconder
+        errorMessage = null;
     }
 
     public override void Draw()
     {
-        // 🔥 PRIORIDADE 1: Mensagem de erro
+        // PRIORIDADE 1: Mensagem de erro
         if (errorMessage != null)
         {
             var pos = ImGui.GetWindowPos();
             var size = ImGui.GetWindowSize();
             var drawList = ImGui.GetWindowDrawList();
 
-            // Fundo preto semi-transparente
             drawList.AddRectFilled(pos, pos + size, ImGui.ColorConvertFloat4ToU32(new Vector4(0, 0, 0, 0.85f)), 10f);
-
-            // Borda branca sutil
             drawList.AddRect(pos, pos + size, ImGui.ColorConvertFloat4ToU32(new Vector4(1, 1, 1, 0.3f)), 10f, 0, 2f);
 
-            // Centraliza o texto
             var textSize = ImGui.CalcTextSize(errorMessage);
             var textPos = pos + (size - textSize) / 2;
             ImGui.SetCursorScreenPos(textPos);
 
-            // Texto vermelho claro
             ImGui.TextColored(new Vector4(1, 0.3f, 0.3f, 1), errorMessage);
             return;
         }
 
-        // 🔥 PRIORIDADE 2: Textura (com loading)
+        // PRIORIDADE 2: Textura
         if (currentTexture == null) return;
 
         var wrap = currentTexture.GetWrapOrDefault();
         if (wrap == null)
         {
-            // Textura ainda não pronta, mostra loading
+            // Loading state
             var pos = ImGui.GetWindowPos();
             var size = ImGui.GetWindowSize();
             var drawList = ImGui.GetWindowDrawList();
@@ -100,25 +132,16 @@ public class PreviewWindow : Window
             return;
         }
 
-        // 🔥 Limita tamanho máximo da imagem
-        var maxSize = 400f;
-        var padding = 20f;
-        var originalSize = new Vector2(wrap.Width, wrap.Height);
-        var imageSize = originalSize;
+        // 🔥 SIMPLIFICADO: Calcula tamanho correto
+        var windowSize = CalculateWindowSize(wrap);
 
-        // Se a imagem for maior que o máximo, redimensiona mantendo proporção
-        if (imageSize.X > maxSize || imageSize.Y > maxSize)
-        {
-            var scale = Math.Min(maxSize / imageSize.X, maxSize / imageSize.Y);
-            imageSize = new Vector2(imageSize.X * scale, imageSize.Y * scale);
-        }
-
-        var windowSize = imageSize + new Vector2(padding, padding);
-        if (Size != windowSize)
+        // 🔥 NOVO: Só recalcula se mudou (evita recálculo todo frame)
+        var currentSize = Size ?? new Vector2(200, 200);
+        if (Math.Abs(currentSize.X - windowSize.X) > 1f || Math.Abs(currentSize.Y - windowSize.Y) > 1f)
         {
             Size = windowSize;
             SizeCondition = ImGuiCond.Always;
-            // Recalcula posição quando tamanho mudar
+
             var screenWidth = ImGuiHelpers.MainViewport.Size.X;
             Position = new Vector2(screenWidth - windowSize.X - 20, 20);
             PositionCondition = ImGuiCond.Always;
