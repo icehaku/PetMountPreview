@@ -10,6 +10,7 @@ namespace SamplePlugin.Windows;
 public class PreviewWindow : Window
 {
     private ISharedImmediateTexture? currentTexture;
+    private string? errorMessage; // 🔥 NOVO: Campo para mensagem de erro
 
     public PreviewWindow() : base(
         "Preview##PreviewWindow",
@@ -26,8 +27,26 @@ public class PreviewWindow : Window
     public void ShowPreview(ISharedImmediateTexture texture, Vector2 position, Vector2 size)
     {
         currentTexture = texture;
+        errorMessage = null; // 🔥 Limpa erro ao mostrar textura
         Size = size;
         Position = position;
+        IsOpen = true;
+    }
+
+    // 🔥 NOVO: Método para exibir mensagem de erro
+    public void ShowError(string message, Vector2 position)
+    {
+        currentTexture = null;
+        errorMessage = message;
+
+        // Calcula tamanho baseado no texto
+        var textSize = ImGui.CalcTextSize(message);
+        var padding = 40f;
+        Size = textSize + new Vector2(padding * 2, padding * 2);
+        Position = position;
+        SizeCondition = ImGuiCond.Always;
+        PositionCondition = ImGuiCond.Always;
+
         IsOpen = true;
     }
 
@@ -35,10 +54,35 @@ public class PreviewWindow : Window
     {
         IsOpen = false;
         currentTexture = null;
+        errorMessage = null; // 🔥 Limpa erro ao esconder
     }
 
     public override void Draw()
     {
+        // 🔥 PRIORIDADE 1: Mensagem de erro
+        if (errorMessage != null)
+        {
+            var pos = ImGui.GetWindowPos();
+            var size = ImGui.GetWindowSize();
+            var drawList = ImGui.GetWindowDrawList();
+
+            // Fundo preto semi-transparente
+            drawList.AddRectFilled(pos, pos + size, ImGui.ColorConvertFloat4ToU32(new Vector4(0, 0, 0, 0.85f)), 10f);
+
+            // Borda branca sutil
+            drawList.AddRect(pos, pos + size, ImGui.ColorConvertFloat4ToU32(new Vector4(1, 1, 1, 0.3f)), 10f, 0, 2f);
+
+            // Centraliza o texto
+            var textSize = ImGui.CalcTextSize(errorMessage);
+            var textPos = pos + (size - textSize) / 2;
+            ImGui.SetCursorScreenPos(textPos);
+
+            // Texto vermelho claro
+            ImGui.TextColored(new Vector4(1, 0.3f, 0.3f, 1), errorMessage);
+            return;
+        }
+
+        // 🔥 PRIORIDADE 2: Textura (com loading)
         if (currentTexture == null) return;
 
         var wrap = currentTexture.GetWrapOrDefault();
@@ -47,10 +91,8 @@ public class PreviewWindow : Window
             // Textura ainda não pronta, mostra loading
             var pos = ImGui.GetWindowPos();
             var size = ImGui.GetWindowSize();
-
             var drawList = ImGui.GetWindowDrawList();
             drawList.AddRectFilled(pos, pos + size, ImGui.ColorConvertFloat4ToU32(new Vector4(0, 0, 0, 0.85f)), 10f);
-
             var loadingText = "Loading...";
             var textSize = ImGui.CalcTextSize(loadingText);
             ImGui.SetCursorScreenPos(pos + (size - textSize) / 2);
@@ -61,7 +103,6 @@ public class PreviewWindow : Window
         // 🔥 Limita tamanho máximo da imagem
         var maxSize = 400f;
         var padding = 20f;
-
         var originalSize = new Vector2(wrap.Width, wrap.Height);
         var imageSize = originalSize;
 
@@ -73,12 +114,10 @@ public class PreviewWindow : Window
         }
 
         var windowSize = imageSize + new Vector2(padding, padding);
-
         if (Size != windowSize)
         {
             Size = windowSize;
             SizeCondition = ImGuiCond.Always;
-
             // Recalcula posição quando tamanho mudar
             var screenWidth = ImGuiHelpers.MainViewport.Size.X;
             Position = new Vector2(screenWidth - windowSize.X - 20, 20);
@@ -99,7 +138,6 @@ public class PreviewWindow : Window
         var imagePadding = 10f;
         var imagePos = pos2 + new Vector2(imagePadding, imagePadding);
         var finalImageSize = size2 - new Vector2(imagePadding * 2, imagePadding * 2);
-
         ImGui.SetCursorScreenPos(imagePos);
         ImGui.Image(wrap.Handle, finalImageSize);
     }

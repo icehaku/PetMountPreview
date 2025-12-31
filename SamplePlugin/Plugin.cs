@@ -205,14 +205,23 @@ public sealed class Plugin : IDalamudPlugin
                 var wikiPageUrl = imagePath.Substring(5);
                 var imageUrl = ScrapeWikiImageUrl(wikiPageUrl);
 
+                // Verifica se conseguiu extrair URL da wiki
                 if (!string.IsNullOrEmpty(imageUrl))
                 {
-                    LoadExternalTextureInWindow(imageUrl, atkUnitBase);
+                    LoadExternalTextureInWindow(imageUrl, atkUnitBase, item);
+                }
+                else
+                {
+                    // Exibe mensagem de erro quando não encontra imagem na wiki
+                    Log.Warning($"Image URL not found on wiki page: {wikiPageUrl}");
+                    var screenWidth = ImGuiHelpers.MainViewport.Size.X;
+                    var errorPosition = new Vector2(screenWidth - 320 - 20, 20);
+                    PreviewWindow?.ShowError("Image not found Online", errorPosition);
                 }
             }
             else
             {
-                LoadExternalTextureInWindow(imagePath, atkUnitBase);
+                LoadExternalTextureInWindow(imagePath, atkUnitBase, item);
             }
             return;
         }
@@ -268,71 +277,95 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private unsafe void LoadExternalTextureInWindow(string filePath, AtkUnitBase* atkUnitBase)
+    private unsafe void LoadExternalTextureInWindow(string filePath, AtkUnitBase* atkUnitBase, Lumina.Excel.Sheets.Item item)
+
     {
         try
         {
+            // Calcula posição do erro/imagem (canto superior direito)
+            var screenWidth = ImGuiHelpers.MainViewport.Size.X;
+            var errorPosition = new Vector2(screenWidth - 320 - 20, 20);
+
             if (!externalTextureCache.TryGetValue(filePath, out var sharedTexture))
             {
                 if (filePath.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
                     filePath.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                 {
                     // Download para cache local (SÍNCRONO - causa freeze mas funciona)
-                    var cachedPath = DownloadImageToCache(filePath);
-                    if (!string.IsNullOrEmpty(cachedPath))
+                    var cachedPath = DownloadImageToCache(filePath, item.Name.ToString());
+
+                    // Verifica se download falhou
+                    if (string.IsNullOrEmpty(cachedPath))
                     {
-                        sharedTexture = TextureProvider.GetFromFile(cachedPath);
+                        Log.Warning($"Failed to download image from URL: {filePath}");
+                        PreviewWindow?.ShowError("Image not found Online", errorPosition);
+                        return;
                     }
+
+                    sharedTexture = TextureProvider.GetFromFile(cachedPath);
                 }
                 else
                 {
                     sharedTexture = TextureProvider.GetFromFile(filePath);
                 }
 
-                if (sharedTexture != null)
+                // Verifica se conseguiu criar a textura
+                if (sharedTexture == null)
                 {
-                    externalTextureCache[filePath] = sharedTexture;
+                    Log.Warning($"Failed to create texture from file: {filePath}");
+                    PreviewWindow?.ShowError("Image not found Online", errorPosition);
+                    return;
                 }
+
+                externalTextureCache[filePath] = sharedTexture;
             }
 
-            if (sharedTexture != null)
+            var wrap = sharedTexture.GetWrapOrDefault();
+            if (wrap != null)
             {
-                var wrap = sharedTexture.GetWrapOrDefault();
-                if (wrap != null)
-                {
-                    var padding = 20f;
-                    var imageSize = new Vector2(wrap.Width, wrap.Height);
-                    var windowSize = imageSize + new Vector2(padding, padding);
+                var padding = 20f;
+                var imageSize = new Vector2(wrap.Width, wrap.Height);
+                var windowSize = imageSize + new Vector2(padding, padding);
 
-                    var screenWidth = ImGuiHelpers.MainViewport.Size.X;
-                    var tooltipPos = new Vector2(screenWidth - windowSize.X - 20, 20);
+                var tooltipPos = new Vector2(screenWidth - windowSize.X - 20, 20);
 
-                    PreviewWindow?.ShowPreview(sharedTexture, tooltipPos, windowSize);
-                    Log.Information($"Showing texture: {filePath}");
-                }
-                else
-                {
-                    var screenWidth = ImGuiHelpers.MainViewport.Size.X;
-                    var windowSize = new Vector2(320, 320);
-                    var tooltipPos = new Vector2(screenWidth - windowSize.X - 20, 20);
+                PreviewWindow?.ShowPreview(sharedTexture, tooltipPos, windowSize);
+                Log.Information($"Showing texture: {filePath}");
+            }
+            else
+            {
+                var windowSize = new Vector2(320, 320);
+                var tooltipPos = new Vector2(screenWidth - windowSize.X - 20, 20);
 
-                    PreviewWindow?.ShowPreview(sharedTexture, tooltipPos, windowSize);
-                }
+                PreviewWindow?.ShowPreview(sharedTexture, tooltipPos, windowSize);
             }
         }
         catch (Exception ex)
         {
+            // 🔥 NOVO: Mostra erro quando ocorre exceção
             Log.Error($"Error loading external texture: {ex.Message}");
+            var screenWidth = ImGuiHelpers.MainViewport.Size.X;
+            var errorPosition = new Vector2(screenWidth - 320 - 20, 20);
+            PreviewWindow?.ShowError("Image not found Online", errorPosition);
         }
     }
 
-    private string DownloadImageToCache(string url)
+    private string DownloadImageToCache(string url, string itemName)
     {
         try
         {
             Log.Information($"Downloading image from URL: {url}");
 
-            var fileName = $"{url.GetHashCode():X}.png";
+            // Usa nome do item como nome do arquivo
+            var invalidChars = Path.GetInvalidFileNameChars();
+            var safeName = string.Join("_", itemName.Split(invalidChars, StringSplitOptions.RemoveEmptyEntries)).TrimEnd('.');
+
+            if (safeName.Length > 200)
+            {
+                safeName = safeName.Substring(0, 200);
+            }
+
+            var fileName = $"{safeName}.png";
             var pluginDir = PluginInterface.AssemblyLocation.Directory?.FullName ?? string.Empty;
             var cacheDir = Path.Combine(pluginDir, "cache", "images");
             var cachePath = Path.Combine(cacheDir, fileName);
@@ -341,7 +374,7 @@ public sealed class Plugin : IDalamudPlugin
 
             if (File.Exists(cachePath))
             {
-                Log.Information($"Using cached download: {cachePath}");
+                Log.Information($"Using cached image: {cachePath}"); 
                 return cachePath;
             }
 
