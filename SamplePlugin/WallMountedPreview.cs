@@ -11,6 +11,7 @@ public unsafe class WallMountedPreview : IPreviewHandler
     private readonly string pluginDirectory;
 
     private const uint WallMountedCategoryId = 79;
+    private const string BaseUrl = "https://ffxiv.consolegameswiki.com/wiki/";
 
     public WallMountedPreview(IDataManager dataManager, IPluginLog log, string pluginDirectory)
     {
@@ -21,7 +22,6 @@ public unsafe class WallMountedPreview : IPreviewHandler
 
     public bool CanHandle(Lumina.Excel.Sheets.ItemAction itemAction)
     {
-        // Wall-Mounted não usa ItemAction
         return false;
     }
 
@@ -30,9 +30,21 @@ public unsafe class WallMountedPreview : IPreviewHandler
         return item.ItemUICategory.RowId == WallMountedCategoryId;
     }
 
-    public string GetImagePath(uint itemId)
+    public string GetImagePath(uint itemId, Lumina.Excel.Sheets.Item item)
     {
-        // 🖼️ Tenta carregar PNG customizada da pasta wall-mounted
+        // 🌐 PRIORIDADE 1: Tenta carregar de URL baseado no nome do item
+        var itemName = item.Name.ToString();
+        if (!string.IsNullOrEmpty(itemName))
+        {
+            // URL-encode do nome (Fool's Portal -> Fool%27s_Portal)
+            var urlSafeName = Uri.EscapeDataString(itemName.Replace(" ", "_"));
+            var wikiUrl = BaseUrl + urlSafeName;
+
+            log.Information($"Wiki URL for wall-mounted: {wikiUrl}");
+            return $"WIKI:{wikiUrl}"; // Prefixo especial para identificar que é wiki
+        }
+
+        // 🖼️ PRIORIDADE 2: Tenta carregar PNG customizada local
         var customImagePath = Path.Combine(pluginDirectory, "images", "wall-mounted", $"{itemId}.png");
 
         if (File.Exists(customImagePath))
@@ -41,7 +53,7 @@ public unsafe class WallMountedPreview : IPreviewHandler
             return customImagePath;
         }
 
-        // 🖼️ PNG genérica
+        // 🖼️ PRIORIDADE 3: PNG genérica local
         var genericImagePath = Path.Combine(pluginDirectory, "images", "wall-mounted", "default.png");
 
         if (File.Exists(genericImagePath))

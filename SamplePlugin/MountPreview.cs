@@ -32,7 +32,7 @@ public unsafe class MountPreview : IPreviewHandler
         return false; // Minion e Mount usam ItemAction, não categoria
     }
 
-    public string GetImagePath(uint mountId)
+    public string GetImagePath(uint mountId, Lumina.Excel.Sheets.Item item)
     {
         var mountSheet = dataManager.GetExcelSheet<Lumina.Excel.Sheets.Mount>();
         if (mountSheet == null) return string.Empty;

@@ -2,6 +2,7 @@ using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Textures;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
+using System;
 using System.Numerics;
 
 namespace SamplePlugin.Windows;
@@ -33,7 +34,7 @@ public class PreviewWindow : Window
     public void HidePreview()
     {
         IsOpen = false;
-        currentTexture = null;        
+        currentTexture = null;
     }
 
     public override void Draw()
@@ -57,9 +58,20 @@ public class PreviewWindow : Window
             return;
         }
 
-        // ✅ Ajusta tamanho E posição da janela quando textura carregar
+        // 🔥 Limita tamanho máximo da imagem
+        var maxSize = 400f;
         var padding = 20f;
-        var imageSize = new Vector2(wrap.Width, wrap.Height);
+
+        var originalSize = new Vector2(wrap.Width, wrap.Height);
+        var imageSize = originalSize;
+
+        // Se a imagem for maior que o máximo, redimensiona mantendo proporção
+        if (imageSize.X > maxSize || imageSize.Y > maxSize)
+        {
+            var scale = Math.Min(maxSize / imageSize.X, maxSize / imageSize.Y);
+            imageSize = new Vector2(imageSize.X * scale, imageSize.Y * scale);
+        }
+
         var windowSize = imageSize + new Vector2(padding, padding);
 
         if (Size != windowSize)
@@ -67,7 +79,7 @@ public class PreviewWindow : Window
             Size = windowSize;
             SizeCondition = ImGuiCond.Always;
 
-            // ✅ Recalcula posição quando tamanho mudar
+            // Recalcula posição quando tamanho mudar
             var screenWidth = ImGuiHelpers.MainViewport.Size.X;
             Position = new Vector2(screenWidth - windowSize.X - 20, 20);
             PositionCondition = ImGuiCond.Always;
@@ -91,15 +103,4 @@ public class PreviewWindow : Window
         ImGui.SetCursorScreenPos(imagePos);
         ImGui.Image(wrap.Handle, finalImageSize);
     }
-
-    //public override void SimpleDraw()
-    //{
-    //    if (currentTexture == null) return;
-
-    //    var wrap = currentTexture.GetWrapOrDefault();
-    //    if (wrap != null)
-    //    {
-    //        ImGui.Image(wrap.Handle, imageSize);
-    //    }
-    //}
 }

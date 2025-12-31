@@ -9,14 +9,15 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.System.Memory;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using HtmlAgilityPack;
 using SamplePlugin.Previews;
 using SamplePlugin.Windows;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Numerics;
-
 
 namespace SamplePlugin;
 
@@ -46,9 +47,9 @@ public sealed class Plugin : IDalamudPlugin
     private string lastImagePath = string.Empty;
     private IPreviewHandler? currentHandler = null;
     private readonly Dictionary<string, ISharedImmediateTexture> externalTextureCache = new();
+    private readonly Dictionary<string, string> wikiImageUrlCache = new();
+    private readonly HttpClient httpClient = new HttpClient();
 
-
-    // Lista de handlers registrados
     private readonly List<IPreviewHandler> previewHandlers = new();
 
     public Plugin()
@@ -59,11 +60,11 @@ public sealed class Plugin : IDalamudPlugin
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this, goatImagePath);
-        PreviewWindow = new PreviewWindow(); // 🔥 ESTA LINHA DEVE EXISTIR
+        PreviewWindow = new PreviewWindow();
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
-        WindowSystem.AddWindow(PreviewWindow); // 🔥 E ESTA TAMBÉM
+        WindowSystem.AddWindow(PreviewWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -77,7 +78,6 @@ public sealed class Plugin : IDalamudPlugin
         AddonLifecycle.RegisterListener(AddonEvent.PostRequestedUpdate, "ItemDetail", OnItemDetailUpdate);
         GameGui.HoveredItemChanged += OnHoveredItemChanged;
 
-        // 🎯 Registra os handlers de preview
         RegisterPreviewHandlers();
 
         Log.Information($"Plugin loaded!");
@@ -98,23 +98,19 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (itemId == 0)
         {
-            // Notifica o handler atual para limpar
-            currentHandler?.OnPreviewHide();
-            currentHandler = null;
-
             PreviewWindow?.HidePreview();
             currentHandler?.OnPreviewHide();
             currentHandler = null;
-            externalTextureCache.Clear();
         }
     }
 
     public void Dispose()
     {
-        // Limpa preview atual
         currentHandler?.OnPreviewHide();
         PreviewWindow?.HidePreview();
         externalTextureCache.Clear();
+        wikiImageUrlCache.Clear();
+        httpClient?.Dispose();
 
         AddonLifecycle.UnregisterListener(OnItemDetailUpdate);
         GameGui.HoveredItemChanged -= OnHoveredItemChanged;
@@ -143,7 +139,6 @@ public sealed class Plugin : IDalamudPlugin
         var atkUnitBase = (AtkUnitBase*)(nint)args.Addon;
         if (atkUnitBase == null) return;
 
-        // Primeiro, esconde o node se existir
         var imageNode = GetImageNode(atkUnitBase);
         if (imageNode != null)
         {
@@ -155,18 +150,17 @@ public sealed class Plugin : IDalamudPlugin
 
         var itemSheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
         if (itemSheet == null) return;
-
         if (!itemSheet.TryGetRow((uint)hoveredItem, out var item))
             return;
 
         IPreviewHandler? handler = null;
         uint itemId = 0;
 
-        // 🎯 Primeiro tenta por categoria (Wall-Mounted, etc)
+        // Primeiro tenta por categoria (Wall-Mounted)
         handler = previewHandlers.FirstOrDefault(h => h.CanHandleByCategory(item));
         if (handler != null)
         {
-            itemId = item.RowId; // Wall-mounted usa o item ID direto
+            itemId = item.RowId;
         }
         else
         {
@@ -182,14 +176,13 @@ public sealed class Plugin : IDalamudPlugin
             itemId = (uint)itemAction.Data[0];
         }
 
-        // Atualiza handler atual
         if (currentHandler != handler)
         {
             currentHandler?.OnPreviewHide();
             currentHandler = handler;
         }
 
-        var imagePath = handler.GetImagePath(itemId);
+        var imagePath = handler.GetImagePath(itemId, item);
 
         if (string.IsNullOrEmpty(imagePath))
         {
@@ -197,21 +190,34 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        // Obtém dimensões do handler
         var (imageWidth, imageHeight, scale) = handler.GetImageDimensions();
-
-        // Executa ações do handler (ex: tocar música)
         handler.OnPreviewShow(itemId);
 
-        // 🖼️ Se é imagem externa (.png/.jpg) - mostra em janela customizada
+        // Se é imagem externa (.png/.jpg) ou URL da wiki
         if (imagePath.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
-            imagePath.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
+            imagePath.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+            imagePath.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            imagePath.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+            imagePath.StartsWith("WIKI:", StringComparison.OrdinalIgnoreCase))
         {
-            LoadExternalTextureInWindow(imagePath, atkUnitBase);
+            if (imagePath.StartsWith("WIKI:"))
+            {
+                var wikiPageUrl = imagePath.Substring(5);
+                var imageUrl = ScrapeWikiImageUrl(wikiPageUrl);
+
+                if (!string.IsNullOrEmpty(imageUrl))
+                {
+                    LoadExternalTextureInWindow(imageUrl, atkUnitBase);
+                }
+            }
+            else
+            {
+                LoadExternalTextureInWindow(imagePath, atkUnitBase);
+            }
             return;
         }
 
-        // 🎮 Se é textura do jogo (.tex) - usa o método normal no tooltip
+        // Textura do jogo (.tex) - usa tooltip nativo
         PreviewWindow?.HidePreview();
 
         var insertNode = atkUnitBase->GetNodeById(2);
@@ -220,17 +226,14 @@ public sealed class Plugin : IDalamudPlugin
         var anchorNode = atkUnitBase->GetNodeById(47);
         if (anchorNode == null) return;
 
-        // Cria o node se não existir
         if (imageNode == null)
         {
             imageNode = CreateImageNode(atkUnitBase, insertNode);
             if (imageNode == null) return;
         }
 
-        // Torna visível
         imageNode->AtkResNode.NodeFlags |= NodeFlags.Visible;
 
-        // Carrega a textura se mudou
         if (imagePath != lastImagePath)
         {
             Log.Information($"Loading texture: {imagePath}");
@@ -238,7 +241,6 @@ public sealed class Plugin : IDalamudPlugin
             lastImagePath = imagePath;
         }
 
-        // Ajusta tamanho e posição
         var width = (ushort)((atkUnitBase->RootNode->Width - 20f) * scale);
         var height = (ushort)(width * imageHeight / imageWidth);
 
@@ -249,14 +251,12 @@ public sealed class Plugin : IDalamudPlugin
         var y = anchorNode->Y + anchorNode->GetHeight() + 8;
         imageNode->AtkResNode.SetPositionFloat(x, y);
 
-        // Ajusta altura do tooltip
         var newHeight = (ushort)(imageNode->AtkResNode.Y + height + 16);
         atkUnitBase->WindowNode->AtkResNode.SetHeight(newHeight);
         atkUnitBase->WindowNode->Component->UldManager.SearchNodeById(2)->SetHeight(newHeight);
         insertNode->SetPositionFloat(insertNode->X, newHeight - 20);
         atkUnitBase->RootNode->SetHeight(newHeight);
 
-        // 🔧 Evita que o tooltip saia da tela
         var screenHeight = ImGuiHelpers.MainViewport.Size.Y;
         var tooltipY = atkUnitBase->Y;
         var tooltipBottom = tooltipY + newHeight;
@@ -265,6 +265,167 @@ public sealed class Plugin : IDalamudPlugin
         {
             var overflow = tooltipBottom - screenHeight;
             atkUnitBase->SetPosition((short)atkUnitBase->X, (short)(tooltipY - overflow - 10));
+        }
+    }
+
+    private unsafe void LoadExternalTextureInWindow(string filePath, AtkUnitBase* atkUnitBase)
+    {
+        try
+        {
+            if (!externalTextureCache.TryGetValue(filePath, out var sharedTexture))
+            {
+                if (filePath.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                    filePath.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Download para cache local (SÍNCRONO - causa freeze mas funciona)
+                    var cachedPath = DownloadImageToCache(filePath);
+                    if (!string.IsNullOrEmpty(cachedPath))
+                    {
+                        sharedTexture = TextureProvider.GetFromFile(cachedPath);
+                    }
+                }
+                else
+                {
+                    sharedTexture = TextureProvider.GetFromFile(filePath);
+                }
+
+                if (sharedTexture != null)
+                {
+                    externalTextureCache[filePath] = sharedTexture;
+                }
+            }
+
+            if (sharedTexture != null)
+            {
+                var wrap = sharedTexture.GetWrapOrDefault();
+                if (wrap != null)
+                {
+                    var padding = 20f;
+                    var imageSize = new Vector2(wrap.Width, wrap.Height);
+                    var windowSize = imageSize + new Vector2(padding, padding);
+
+                    var screenWidth = ImGuiHelpers.MainViewport.Size.X;
+                    var tooltipPos = new Vector2(screenWidth - windowSize.X - 20, 20);
+
+                    PreviewWindow?.ShowPreview(sharedTexture, tooltipPos, windowSize);
+                    Log.Information($"Showing texture: {filePath}");
+                }
+                else
+                {
+                    var screenWidth = ImGuiHelpers.MainViewport.Size.X;
+                    var windowSize = new Vector2(320, 320);
+                    var tooltipPos = new Vector2(screenWidth - windowSize.X - 20, 20);
+
+                    PreviewWindow?.ShowPreview(sharedTexture, tooltipPos, windowSize);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Error loading external texture: {ex.Message}");
+        }
+    }
+
+    private string DownloadImageToCache(string url)
+    {
+        try
+        {
+            Log.Information($"Downloading image from URL: {url}");
+
+            var fileName = $"{url.GetHashCode():X}.png";
+            var pluginDir = PluginInterface.AssemblyLocation.Directory?.FullName ?? string.Empty;
+            var cacheDir = Path.Combine(pluginDir, "cache", "images");
+            var cachePath = Path.Combine(cacheDir, fileName);
+
+            Directory.CreateDirectory(cacheDir);
+
+            if (File.Exists(cachePath))
+            {
+                Log.Information($"Using cached download: {cachePath}");
+                return cachePath;
+            }
+
+            var imageBytes = httpClient.GetByteArrayAsync(url).Result;
+            File.WriteAllBytes(cachePath, imageBytes);
+
+            Log.Information($"Downloaded to cache: {cachePath}");
+            return cachePath;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Failed to download image from URL: {ex.Message}");
+            return string.Empty;
+        }
+    }
+
+    private string ScrapeWikiImageUrl(string wikiPageUrl)
+    {
+        try
+        {
+            if (wikiImageUrlCache.TryGetValue(wikiPageUrl, out var cachedUrl))
+            {
+                Log.Information($"Using cached wiki image URL: {cachedUrl}");
+                return cachedUrl;
+            }
+
+            Log.Information($"Scraping wiki page: {wikiPageUrl}");
+
+            var html = httpClient.GetStringAsync(wikiPageUrl).Result;
+
+            var htmlDoc = new HtmlDocument();
+            htmlDoc.LoadHtml(html);
+
+            var imageNode = htmlDoc.DocumentNode.SelectSingleNode("//p[@class='image_wrapper']//img");
+
+            if (imageNode != null)
+            {
+                var src = imageNode.GetAttributeValue("src", "");
+
+                if (!string.IsNullOrEmpty(src))
+                {
+                    string fullImageUrl;
+                    if (src.StartsWith("http"))
+                    {
+                        fullImageUrl = src;
+                    }
+                    else if (src.StartsWith("/"))
+                    {
+                        fullImageUrl = "https://ffxiv.consolegameswiki.com" + src;
+                    }
+                    else
+                    {
+                        fullImageUrl = "https://ffxiv.consolegameswiki.com/" + src;
+                    }
+
+                    if (fullImageUrl.Contains("/thumb/"))
+                    {
+                        fullImageUrl = fullImageUrl.Replace("/thumb/", "/");
+
+                        var extensions = new[] { ".jpg", ".jpeg", ".png", ".gif" };
+                        foreach (var ext in extensions)
+                        {
+                            var firstExtIndex = fullImageUrl.IndexOf(ext);
+                            if (firstExtIndex > 0)
+                            {
+                                fullImageUrl = fullImageUrl.Substring(0, firstExtIndex + ext.Length);
+                                break;
+                            }
+                        }
+                    }
+
+                    Log.Information($"Final wiki image URL: {fullImageUrl}");
+                    wikiImageUrlCache[wikiPageUrl] = fullImageUrl;
+                    return fullImageUrl;
+                }
+            }
+
+            Log.Warning($"Could not find image in wiki page: {wikiPageUrl}");
+            return string.Empty;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Error scraping wiki page: {ex.Message}");
+            return string.Empty;
         }
     }
 
@@ -296,7 +457,6 @@ public sealed class Plugin : IDalamudPlugin
         imageNode->WrapMode = 1;
         imageNode->Flags = ImageNodeFlags.AutoFit;
 
-        // Cria PartsList
         var partsList = (AtkUldPartsList*)IMemorySpace.GetUISpace()->Malloc((ulong)sizeof(AtkUldPartsList), 8);
         if (partsList == null)
         {
@@ -308,7 +468,6 @@ public sealed class Plugin : IDalamudPlugin
         partsList->Id = 0;
         partsList->PartCount = 1;
 
-        // Cria Part
         var part = (AtkUldPart*)IMemorySpace.GetUISpace()->Malloc((ulong)sizeof(AtkUldPart), 8);
         if (part == null)
         {
@@ -325,7 +484,6 @@ public sealed class Plugin : IDalamudPlugin
 
         partsList->Parts = part;
 
-        // Cria Asset
         var asset = (AtkUldAsset*)IMemorySpace.GetUISpace()->Malloc((ulong)sizeof(AtkUldAsset), 8);
         if (asset == null)
         {
@@ -341,7 +499,6 @@ public sealed class Plugin : IDalamudPlugin
         part->UldAsset = asset;
         imageNode->PartsList = partsList;
 
-        // Adiciona à lista de nodes
         var prev = insertNode->PrevSiblingNode;
         imageNode->AtkResNode.ParentNode = insertNode->ParentNode;
 
@@ -387,50 +544,6 @@ public sealed class Plugin : IDalamudPlugin
 
         imageNode->AtkResNode.Destroy(true);
         lastImagePath = string.Empty;
-    }
-
-    private unsafe void LoadExternalTextureInWindow(string filePath, AtkUnitBase* atkUnitBase)
-    {
-        try
-        {
-            if (!externalTextureCache.TryGetValue(filePath, out var sharedTexture))
-            {
-                sharedTexture = TextureProvider.GetFromFile(filePath);
-                externalTextureCache[filePath] = sharedTexture;
-            }
-
-            if (sharedTexture != null)
-            {
-                var wrap = sharedTexture.GetWrapOrDefault();
-                if (wrap != null)
-                {
-                    // ✅ Calcula tamanho baseado na imagem REAL
-                    var padding = 20f;
-                    var imageSize = new Vector2(wrap.Width, wrap.Height);
-                    var windowSize = imageSize + new Vector2(padding, padding);
-
-                    var screenWidth = ImGuiHelpers.MainViewport.Size.X;
-                    var tooltipPos = new Vector2(screenWidth - windowSize.X - 20, 20);
-
-                    PreviewWindow?.ShowPreview(sharedTexture, tooltipPos, windowSize);
-                    Log.Information($"Showing texture: {filePath} ({wrap.Width}x{wrap.Height})");
-                }
-                else
-                {
-                    // Se wrap ainda null, usa tamanho padrão e depois ajusta no Draw
-                    var screenWidth = ImGuiHelpers.MainViewport.Size.X;
-                    var windowSize = new Vector2(320, 320);
-                    var tooltipPos = new Vector2(screenWidth - windowSize.X - 20, 20);
-
-                    PreviewWindow?.ShowPreview(sharedTexture, tooltipPos, windowSize);
-                    Log.Information($"Texture not ready yet, showing loading: {filePath}");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"Error loading external texture: {ex.Message}");
-        }
     }
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();

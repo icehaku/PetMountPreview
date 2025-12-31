@@ -31,7 +31,7 @@ public unsafe class MinionPreview : IPreviewHandler
         return false; // Minion e Mount usam ItemAction, não categoria
     }
 
-    public string GetImagePath(uint minionId)
+    public string GetImagePath(uint minionId, Lumina.Excel.Sheets.Item item)
     {
         var companionSheet = dataManager.GetExcelSheet<Lumina.Excel.Sheets.Companion>();
         if (companionSheet == null) return string.Empty;

@@ -7,10 +7,12 @@
     <IsPackable>false</IsPackable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+  
   <ItemGroup>
     <Content Include="..\Data\goat.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Visible>false</Visible>
     </Content>
+    <PackageReference Include="HtmlAgilityPack" Version="1.11.54" />
   </ItemGroup>
 </Project>

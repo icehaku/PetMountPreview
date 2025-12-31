@@ -15,7 +15,7 @@ public interface IPreviewHandler
     /// <summary>
     /// Obtém o caminho da imagem para o item
     /// </summary>
-    string GetImagePath(uint itemId);
+    string GetImagePath(uint itemId, Lumina.Excel.Sheets.Item item);
 
     /// <summary>
     /// Obtém as dimensões da imagem (width, height, scale)
