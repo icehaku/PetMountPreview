@@ -10,6 +10,7 @@ public class Configuration : IPluginConfiguration
 
     public bool IsConfigWindowMovable { get; set; } = true;
     public bool SomePropertyToBeSavedAndWithADefault { get; set; } = true;
+     public Dictionary<uint, ushort> MountMusicOverrides { get; set; } = new();
 
     // The below exists just to make saving less cumbersome
     public void Save()

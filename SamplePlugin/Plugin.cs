@@ -12,6 +12,7 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using HtmlAgilityPack;
 using SamplePlugin.Previews;
 using SamplePlugin.Windows;
+using Serilog;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -89,7 +90,7 @@ public sealed class Plugin : IDalamudPlugin
 
         previewHandlers.Add(new MinionPreview(DataManager, Log));
         previewHandlers.Add(new MountPreview(DataManager, Log));
-        previewHandlers.Add(new WallMountedPreview(DataManager, Log, pluginDir));
+        previewHandlers.Add(new OnlineSearchPreview(DataManager, Log, pluginDir));
 
         Log.Information($"Registered {previewHandlers.Count} preview handlers");
     }
@@ -152,6 +153,10 @@ public sealed class Plugin : IDalamudPlugin
         if (itemSheet == null) return;
         if (!itemSheet.TryGetRow((uint)hoveredItem, out var item))
             return;
+
+
+        var categoryId = item.ItemUICategory.RowId;
+        Log.Information($"OnlineSearchPreview handling item: {item.Name} (Category: {categoryId})");
 
         IPreviewHandler? handler = null;
         uint itemId = 0;
